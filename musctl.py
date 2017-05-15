@@ -87,6 +87,7 @@ class MusCtl:
 
     def deduplicate_playlists(self):
         self.logger.info("deduplicating all playlists")
+        playlist_was_edited = False
         for playlist in os.listdir(self.media_loc["playlists"]):
             # get file contents
             with open(os.path.join(self.media_loc["playlists"], playlist), "r") as f:
@@ -98,10 +99,13 @@ class MusCtl:
 
             # compare
             if playlist_dedup != playlist_orig:
+                playlist_was_edited = True
                 with open(os.path.join(self.media_loc["playlists"], playlist), "w") as f:
                     for line in playlist_dedup:
                         f.write("{}\n".format(line))
                 self.logger.info("playlist dedup: edited {}".format(playlist))
+        if not playlist_was_edited:
+            self.logger.info("no edits made")
 
 if __name__ == "__main__":
     musctl = MusCtl()
