@@ -27,14 +27,17 @@ class MusCtl:
     def __parse_args(self):
         self.parser = argparse.ArgumentParser(description="Manage and maintain a music library.")
         self.parser.add_argument("-v", "--verbose", help="be verbose", action="count", default=0)
+        self.parser.add_argument("-q", "--quiet", help="be quiet (overrides -v)", action="count", default=0)
         self.parser.add_argument("command", help="command to run")
         self.parser.add_argument("arguments", nargs="*", help="arguments for command")
 
         self.args = self.parser.parse_args()
-        if self.args.verbose == 1:
+        if self.args.verbose == 0:
             self.logger.setLevel(logging.INFO)
-        elif self.args.verbose >= 2:
+        elif self.args.verbose >= 1:
             self.logger.setLevel(logging.DEBUG)
+        if self.args.quiet >= 1:
+            self.logger.setLevel(logging.NOTSET)
 
         # dictionary of command -> function
         # command aliases are easily specified by adding to the key tuple
