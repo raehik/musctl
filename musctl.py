@@ -17,6 +17,10 @@ class MusCtl:
             "lyrics":    os.path.join(os.environ["HOME"], "media", "music-etc", "lyrics"),
         }
 
+    def __deinit(self):
+        # no special deinitialising required
+        pass
+
     ## CLI-related {{{
     def __init_logging(self):
         self.logger = logging.getLogger(os.path.basename(sys.argv[0]))
@@ -28,8 +32,19 @@ class MusCtl:
         self.parser = argparse.ArgumentParser(description="Manage and maintain a music library.")
         self.parser.add_argument("-v", "--verbose", help="be verbose", action="count", default=0)
         self.parser.add_argument("-q", "--quiet", help="be quiet (overrides -v)", action="count", default=0)
-        self.parser.add_argument("command", help="command to run")
-        self.parser.add_argument("arguments", nargs="*", help="arguments for command")
+        subparsers = self.parser.add_subparsers(title="commands", dest="command", metavar="[command]")
+        subparsers.required = True
+
+        subp_dedup = subparsers.add_parser("deduplicate-playlists",
+                aliases=["deduplicate", "playlist-dedup", "dedup"],
+                help="deduplicate playlists",
+                description="Remove duplicate track in all playlist files (so that each playlist may only contain a given track once).")
+        subp_dedup.set_defaults(func=self.deduplicate_playlists)
+
+        subp_all = subparsers.add_parser("all",
+                help="run all mainentance commands",
+                description="Run all common maintenance commands.")
+        subp_all.set_defaults(func=self.cmd_all)
 
         self.args = self.parser.parse_args()
         if self.args.verbose == 0:
@@ -39,14 +54,7 @@ class MusCtl:
         if self.args.quiet >= 1:
             self.logger.setLevel(logging.NOTSET)
 
-        # dictionary of command -> function
-        # command aliases are easily specified by adding to the key tuple
-        self.cmds = {
-            ("deduplicate-playlists", "deduplicate", "playlist-dedup", "dedup"):
-                self.deduplicate_playlists,
-            ("help", "h"):
-                lambda: self.__show_cmd_help(self.args.arguments),
-        }
+        self.args.func()
 
     def __show_cmd_help(self, args):
         """Show specific command help, or list available commands."""
@@ -60,25 +68,18 @@ class MusCtl:
             print("Command: {}".format(aliases[0]))
             print("Aliases: {}".format(", ".join(aliases[1:])))
 
-    def __parse_cmd(self):
-        """Parse commandline command and run a command if found."""
-        for cmd_options, cmd_exec in self.cmds.items():
-            if self.args.command in cmd_options:
-                cmd_exec()
-                break
-        else:
-            self.exit("unknown command '{}'".format(self.args.command), 3)
-
     def run(self):
-        """Run from CLI: parse arguments, execute command."""
+        """Run from CLI: parse arguments, execute command, deinitialise."""
         self.__init_logging()
         self.__parse_args()
-        self.__parse_cmd()
+        self.__deinit()
     ## }}}
 
     def exit(self, msg, ret):
         """Exit with explanation."""
         self.logger.error(msg)
+        self.logger.info("deinitialising...")
+        self.__deinit()
         sys.exit(ret)
 
     def get_shell(self, args):
@@ -106,6 +107,9 @@ class MusCtl:
                 self.logger.info("playlist dedup: edited {}".format(playlist))
         if not playlist_was_edited:
             self.logger.info("no edits made")
+
+    def cmd_all(self):
+        self.deduplicate_playlists()
 
 if __name__ == "__main__":
     musctl = MusCtl()
