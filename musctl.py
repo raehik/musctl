@@ -41,10 +41,11 @@ class MusCtl:
                 description="Remove duplicate track in all playlist files (so that each playlist may only contain a given track once).")
         subp_dedup.set_defaults(func=self.deduplicate_playlists)
 
-        subp_all = subparsers.add_parser("all",
-                help="run all mainentance commands",
-                description="Run all common maintenance commands.")
-        subp_all.set_defaults(func=self.cmd_all)
+        subp_maintenance = subparsers.add_parser("maintenance",
+                help="run mainentance commands",
+                aliases=["maint"],
+                description="Run all maintenance commands.")
+        subp_maintenance.set_defaults(func=self.cmd_maintenance)
 
         self.args = self.parser.parse_args()
         if self.args.verbose == 0:
@@ -108,7 +109,7 @@ class MusCtl:
         if not playlist_was_edited:
             self.logger.info("no edits made")
 
-    def cmd_all(self):
+    def cmd_maintenance(self):
         self.deduplicate_playlists()
 
 if __name__ == "__main__":
