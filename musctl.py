@@ -35,11 +35,17 @@ class MusCtl:
         subparsers = self.parser.add_subparsers(title="commands", dest="command", metavar="[command]")
         subparsers.required = True
 
-        subp_dedup = subparsers.add_parser("deduplicate-playlists",
+        subp_dedup_pl = subparsers.add_parser("deduplicate-playlists",
                 aliases=["deduplicate", "playlist-dedup", "dedup"],
                 help="deduplicate playlists",
                 description="Remove duplicate track in all playlist files (so that each playlist may only contain a given track once).")
-        subp_dedup.set_defaults(func=self.deduplicate_playlists)
+        subp_dedup_pl.set_defaults(func=self.deduplicate_playlists)
+
+        subp_check_pl = subparsers.add_parser("check-playlists",
+                aliases=["playlist-check"],
+                help="check all playlist tracks exist",
+                description="Check for and report any tracks referenced in a playlist that cannot be found.")
+        subp_check_pl.set_defaults(func=self.check_playlists)
 
         subp_maintenance = subparsers.add_parser("maintenance",
                 help="run mainentance commands",
@@ -56,18 +62,6 @@ class MusCtl:
             self.logger.setLevel(logging.NOTSET)
 
         self.args.func()
-
-    def __show_cmd_help(self, args):
-        """Show specific command help, or list available commands."""
-        if not args:
-            print("Available commands: {}".format(", ".join([c[0] for c in self.cmds])))
-        else:
-            aliases = [c for c in self.cmds.keys() if args[0] in c]
-            if not aliases:
-                self.exit("unknown command '{}'".format(args[0]), 5)
-            aliases = aliases[0]
-            print("Command: {}".format(aliases[0]))
-            print("Aliases: {}".format(", ".join(aliases[1:])))
 
     def run(self):
         """Run from CLI: parse arguments, execute command, deinitialise."""
@@ -87,30 +81,56 @@ class MusCtl:
         """Run a shell command and return the exit code."""
         return subprocess.run(args).returncode
 
-    def deduplicate_playlists(self):
-        self.logger.info("deduplicating all playlists")
-        playlist_was_edited = False
-        for playlist in os.listdir(self.media_loc["playlists"]):
-            # get file contents
-            with open(os.path.join(self.media_loc["playlists"], playlist), "r") as f:
-                playlist_orig = f.read().splitlines()
+    def __get_playlists(self):
+        playlists = {}
+        for pl in os.listdir(self.media_loc["playlists"]):
+            with open(os.path.join(self.media_loc["playlists"], pl), "r") as f:
+                playlists[pl] = f.read().splitlines()
+        return playlists
 
+    def deduplicate_playlists(self):
+        self.logger.info("deduplicating all playlists...")
+        playlist_was_edited = False
+        for playlist, tracks in self.__get_playlists().items():
             # get deduplicated contents
             seen = set()
-            playlist_dedup = [l for l in playlist_orig if not (l in seen or seen.add(l))]
+            tracks_dedup = [l for l in tracks if not (l in seen or seen.add(l))]
 
             # compare
-            if playlist_dedup != playlist_orig:
+            if tracks_dedup != tracks:
                 playlist_was_edited = True
                 with open(os.path.join(self.media_loc["playlists"], playlist), "w") as f:
-                    for line in playlist_dedup:
+                    for line in tracks_dedup:
                         f.write("{}\n".format(line))
                 self.logger.info("playlist dedup: edited {}".format(playlist))
-        if not playlist_was_edited:
+
+        if playlist_was_edited:
+            self.logger.warning("one or more playlists were edited to remove duplicate tracks")
+        else:
             self.logger.info("no edits made")
+
+    def check_playlists(self):
+        self.logger.info("checking for non-existing playlist tracks...")
+        nonexist_track_was_found = False
+        for playlist, tracks in self.__get_playlists().items():
+            for line in tracks:
+                if line.startswith("#"):
+                    # ignore comment lines
+                    continue
+                track = os.path.join(self.media_loc["music"], line)
+                ret = os.path.exists(track)
+                if ret == False:
+                    nonexist_track_was_found = True
+                    self.logger.info("playlist '{}' contained non-existing track '{}'".format(playlist, track))
+
+        if nonexist_track_was_found:
+            self.logger.warning("one or many playlists contained non-existing tracks")
+        else:
+            self.logger.info("all playlists contain only valid filepaths")
 
     def cmd_maintenance(self):
         self.deduplicate_playlists()
+        self.check_playlists()
 
 if __name__ == "__main__":
     musctl = MusCtl()
