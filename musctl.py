@@ -10,9 +10,12 @@ import subprocess
 import logging
 
 class MusCtl:
+    CONVERT_EXTS = ["flac"]
+
     def __init__(self):
         self.media_loc = {
             "music":     os.path.join(os.environ["HOME"], "media", "music"),
+            "music-portable": os.path.join(os.environ["HOME"], "media", "music-etc", "music-portable"),
             "playlists": os.path.join(os.environ["HOME"], "media", "music-etc", "playlists"),
             "lyrics":    os.path.join(os.environ["HOME"], "media", "music-etc", "lyrics"),
         }
@@ -39,13 +42,19 @@ class MusCtl:
                 aliases=["deduplicate", "playlist-dedup", "dedup"],
                 help="deduplicate playlists",
                 description="Remove duplicate track in all playlist files (so that each playlist may only contain a given track once).")
-        subp_dedup_pl.set_defaults(func=self.deduplicate_playlists)
+        subp_dedup_pl.set_defaults(func=self.cmd_deduplicate_playlists)
 
         subp_check_pl = subparsers.add_parser("check-playlists",
                 aliases=["playlist-check"],
                 help="check all playlist tracks exist",
                 description="Check for and report any tracks referenced in a playlist that cannot be found.")
-        subp_check_pl.set_defaults(func=self.check_playlists)
+        subp_check_pl.set_defaults(func=self.cmd_check_playlists)
+
+        subp_gen_port = subparsers.add_parser("generate-portable",
+                aliases=["gen-portable", "gen-port", "portable", "port"],
+                help="generate a portable version of the library",
+                description="Generate a portable version of the music library, with certain formats re-encoded to a consistent format and most scans and extras left out. Intended to be used to generate a library usable for portable music players with higher space constraints.")
+        subp_gen_port.set_defaults(func=self.cmd_generate_portable)
 
         subp_maintenance = subparsers.add_parser("maintenance",
                 help="run mainentance commands",
@@ -88,7 +97,7 @@ class MusCtl:
                 playlists[pl] = f.read().splitlines()
         return playlists
 
-    def deduplicate_playlists(self):
+    def cmd_deduplicate_playlists(self):
         self.logger.info("deduplicating all playlists...")
         playlist_was_edited = False
         for playlist, tracks in self.__get_playlists().items():
@@ -109,7 +118,7 @@ class MusCtl:
         else:
             self.logger.info("no edits made")
 
-    def check_playlists(self):
+    def cmd_check_playlists(self):
         self.logger.info("checking for non-existing playlist tracks...")
         nonexist_track_was_found = False
         for playlist, tracks in self.__get_playlists().items():
@@ -128,9 +137,32 @@ class MusCtl:
         else:
             self.logger.info("all playlists contain only valid filepaths")
 
+    def get_shell(self, args):
+        """Run a shell command and return the exit code."""
+        return subprocess.run(args).returncode
+
+    def __cp_contents(self, src, dst):
+        # note the trailing forward slash: rsync will copy directory contents
+        self.get_shell(["rsync", "-av", "{}/".format(src), dst])
+
+    def cmd_generate_portable(self):
+        self.logger.info("generating portable library...")
+
+        # new plan:
+        #   1. collect list of all files to process (all but */etc/*)
+        #   2. if file ends in one of MusCtl.CONVERT_EXTS, add to FFmpeg list
+        #   3. otherwise, add to rsync list
+        #   4. rsync first (will create directories, right? TODO be careful)
+        #   5. if successful, FFmpeg source -> dest.ogg
+
+        # copy all but */etc/* (scans etc.)
+        self.get_shell(["rsync", "-av", "--exclude", "etc", "{}/".format(self.media_loc["music"]), self.media_loc["music-portable"]])
+
+        self.logger.info("portable library generated")
+
     def cmd_maintenance(self):
-        self.deduplicate_playlists()
-        self.check_playlists()
+        self.cmd_deduplicate_playlists()
+        self.cmd_check_playlists()
 
 if __name__ == "__main__":
     musctl = MusCtl()
