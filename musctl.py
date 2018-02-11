@@ -3,14 +3,13 @@
 # Manage and maintain a music library.
 #
 
-import sys
-import os
-import argparse
-import subprocess
-import logging
+import raehutils
+import sys, os, argparse, logging
 
-class MusCtl:
-    CONVERT_EXTS = ["flac"]
+class MusCtl(raehutils.RaehBaseClass):
+    ERR_RSYNC = 1
+    ERR_FILESYSTEM = 2
+    ERR_FFMPEG = 3
 
     def __init__(self):
         self.media_loc = {
@@ -19,19 +18,11 @@ class MusCtl:
             "playlists": os.path.join(os.environ["HOME"], "media", "music-etc", "playlists"),
             "lyrics":    os.path.join(os.environ["HOME"], "media", "music-etc", "lyrics"),
         }
-
-    def __deinit(self):
-        # no special deinitialising required
-        pass
+        self.convert_exts = ["flac"]
+        self.excluded_dirs = ["etc"]
 
     ## CLI-related {{{
-    def __init_logging(self):
-        self.logger = logging.getLogger(os.path.basename(sys.argv[0]))
-        lh = logging.StreamHandler()
-        lh.setFormatter(logging.Formatter("%(name)s: %(levelname)s: %(message)s"))
-        self.logger.addHandler(lh)
-
-    def __parse_args(self):
+    def _parse_args(self):
         self.parser = argparse.ArgumentParser(description="Manage and maintain a music library.")
         self.parser.add_argument("-v", "--verbose", help="be verbose", action="count", default=0)
         self.parser.add_argument("-q", "--quiet", help="be quiet (overrides -v)", action="count", default=0)
@@ -63,39 +54,23 @@ class MusCtl:
         subp_maintenance.set_defaults(func=self.cmd_maintenance)
 
         self.args = self.parser.parse_args()
-        if self.args.verbose == 0:
-            self.logger.setLevel(logging.INFO)
-        elif self.args.verbose >= 1:
-            self.logger.setLevel(logging.DEBUG)
-        if self.args.quiet >= 1:
-            self.logger.setLevel(logging.NOTSET)
 
-        self.args.func()
-
-    def run(self):
-        """Run from CLI: parse arguments, execute command, deinitialise."""
-        self.__init_logging()
-        self.__parse_args()
-        self.__deinit()
+        self.args.verbose += 1 # force some verbosity
+        self._parse_verbosity()
     ## }}}
 
-    def exit(self, msg, ret):
-        """Exit with explanation."""
-        self.logger.error(msg)
-        self.logger.info("deinitialising...")
-        self.__deinit()
-        sys.exit(ret)
+    def main(self):
+        """Main entrypoint after program initialisation."""
+        self.args.func()
 
-    def get_shell(self, args):
-        """Run a shell command and return the exit code."""
-        return subprocess.run(args).returncode
+    def fail_if_error(self, function_ret, msg, ret):
+        """Fail if function_ret is non-zero."""
+        if function_ret != 0:
+            self.fail(msg, ret)
 
-    def __get_playlists(self):
-        playlists = {}
-        for pl in os.listdir(self.media_loc["playlists"]):
-            with open(os.path.join(self.media_loc["playlists"], pl), "r") as f:
-                playlists[pl] = f.read().splitlines()
-        return playlists
+    def cmd_maintenance(self):
+        self.cmd_deduplicate_playlists()
+        self.cmd_check_playlists()
 
     def cmd_deduplicate_playlists(self):
         self.logger.info("deduplicating all playlists...")
@@ -137,32 +112,133 @@ class MusCtl:
         else:
             self.logger.info("all playlists contain only valid filepaths")
 
-    def get_shell(self, args):
-        """Run a shell command and return the exit code."""
-        return subprocess.run(args).returncode
-
-    def __cp_contents(self, src, dst):
-        # note the trailing forward slash: rsync will copy directory contents
-        self.get_shell(["rsync", "-av", "{}/".format(src), dst])
+    def __get_playlists(self):
+        playlists = {}
+        for pl in os.listdir(self.media_loc["playlists"]):
+            with open(os.path.join(self.media_loc["playlists"], pl), "r") as f:
+                playlists[pl] = f.read().splitlines()
+        return playlists
 
     def cmd_generate_portable(self):
+        """Generate a portable version of the music library.
+
+        Certain files are left out, and certain formats are re-encoded.
+
+        The process is complicated slightly by the fact that we don't want to
+        perform re-encoding in-place, because it'd mess up the main library,
+        waste lots of disk space (and potentially time, if the portable library
+        is kept on a separate filesystem) and just not be useful.
+        """
         self.logger.info("generating portable library...")
 
-        # new plan:
-        #   1. collect list of all files to process (all but */etc/*)
-        #   2. if file ends in one of MusCtl.CONVERT_EXTS, add to FFmpeg list
-        #   3. otherwise, add to rsync list
-        #   4. rsync first (will create directories, right? TODO be careful)
-        #   5. if successful, FFmpeg source -> dest.ogg
+        self.logger.info("finding files to copy...")
+        tracks_needing_converting = []
+        regular_files = []
+        for root, dirs, files in os.walk(self.media_loc["music"], topdown=True):
+            # edit dirs in place to remove any excluded ones (must be top-down)
+            dirs[:] = [d for d in dirs if d not in self.excluded_dirs]
+            for filename in files:
+                filepath = os.path.join(root, filename)
+                ext = os.path.splitext(filename)[1][1:]
 
-        # copy all but */etc/* (scans etc.)
-        self.get_shell(["rsync", "-av", "--exclude", "etc", "{}/".format(self.media_loc["music"]), self.media_loc["music-portable"]])
+                # add file to either regular list or convert list
+                # we remove the non-library part, so we're left with filenames
+                # used in playlists e.g. `sort/track.ogg`
+                if ext in self.convert_exts:
+                    tracks_needing_converting.append(self.__path_without_music_lib(filepath))
+                else:
+                    regular_files.append(self.__path_without_music_lib(filepath))
+
+        # sort lists, just because (means we go from track 01 -> 10 etc.)
+        tracks_needing_converting.sort()
+        regular_files.sort()
+
+        self.logger.info("copying files & tracks not requiring conversion...")
+        cmd_rsync_regular = ["rsync", "-aR"]
+        if self.args.verbose == 2:
+            cmd_rsync_regular.append("--info=progress2")
+        elif self.args.verbose >= 3:
+            cmd_rsync_regular.append("-P")
+        cmd_rsync_regular += regular_files + [self.media_loc["music-portable"]]
+        self.fail_if_error(
+                self.run_shell_cmd(
+                    cmd_rsync_regular,
+                    cwd=self.media_loc["music"],
+                    min_verb_lvl=2),
+                "rsync command copying regular files failed", MusCtl.ERR_RSYNC)
+
+        self.logger.info("converting tracks and placing into portable library...")
+        total_convert_tracks = len(tracks_needing_converting)
+        for track_num in range(total_convert_tracks):
+            track = tracks_needing_converting[track_num]
+            infile = os.path.join(self.media_loc["music"], track)
+            outdir = os.path.dirname(os.path.join(self.media_loc["music-portable"], track))
+
+            self.logger.info("converting track ({}/{}): {}".format(
+                track_num+1, total_convert_tracks, track))
+
+            # ensure the track's directory exists
+            self.fail_if_error(
+                    self.run_shell_cmd(["mkdir", "-p", outdir]),
+                    "couldn't create directory structure for a track to be converted",
+                    MusCtl.ERR_FILESYSTEM)
+
+            # convert and move (without converting in place)
+            self.fail_if_error(
+                    self.__ffmpeg_convert(infile, outdir),
+                    "an ffmpeg command failed", MusCtl.ERR_FFMPEG)
 
         self.logger.info("portable library generated")
 
-    def cmd_maintenance(self):
-        self.cmd_deduplicate_playlists()
-        self.cmd_check_playlists()
+    def __path_without_music_lib(self, path):
+        """Remove media_loc["music"] from the start of a path."""
+        return path.replace("{}/".format(self.media_loc["music"]), "")
+
+    def __ffmpeg_convert(self, infile, outdir):
+        """Convert a track and place the output in the given directory.
+
+          * infile is guaranteed to have an extension
+          * outdir is guaranteed to be a valid existing directory
+
+        Things we do in the conversion:
+
+          * null video (i.e. remove embedded album art)
+          * convert to OGG, quality 5
+
+        If the outfile exists, we fail.
+
+        @param infile an absolute path to a track
+        @param outdir absolute path of directory to place the output file in
+        @return the return code of the FFmpeg command
+        """
+        outfile = os.path.join(outdir, os.path.splitext(os.path.basename(infile))[0]+".ogg")
+        if os.path.exists(outfile):
+            self.fail("ffmpeg outfile already exists: {}".format(outfile), MusCtl.ERR_FILESYSTEM)
+            #self.logger.error("ffmpeg outfile already exists: {}".format(outfile)) # TODO
+            pass
+        cmd_ffmpeg_conv_cp = ["ffmpeg", "-n", "-i", infile, "-vn", "-q:a", "5", outfile]
+
+        rc = self.run_shell_cmd(cmd_ffmpeg_conv_cp)
+        #rc = 0 # TODO
+        return rc
+
+    def run_shell_cmd(self, cmd, cwd=None, min_verb_lvl=3):
+        """Run a shell command, only showing output if sufficiently verbose.
+
+        Assumes that command's output is "optional" in the first place, and
+        doesn't require any input.
+
+        @param cmd command to run as an array, where each element is an argument
+        @param cwd if present, directory to use as CWD
+        @param min_verb_lvl verbosity level required to show output
+        @return the command's exit code
+        """
+        rc = 0
+        if self.args.quiet == 0 and self.args.verbose >= min_verb_lvl:
+            rc = raehutils.drop_to_shell(cmd, cwd=cwd)
+        else:
+            rc = raehutils.get_shell(cmd, cwd=cwd)[0]
+        return rc
 
 if __name__ == "__main__":
     musctl = MusCtl()
