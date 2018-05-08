@@ -6,26 +6,28 @@
 import raehutils
 import sys, os, argparse, logging
 
+import configparser
+
 class MusCtl(raehutils.RaehBaseClass):
+    DEF_CONFIG_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expandvars("$HOME/.config"), "musctl.ini")
+
+    DEF_CONVERT_EXTS = ["flac"]
+    DEF_EXCLUDE_DIRS = ["etc"]
+
     ERR_RSYNC = 1
     ERR_FILESYSTEM = 2
     ERR_FFMPEG = 3
+    ERR_CONFIG = 7
 
     def __init__(self):
-        self.media_loc = {
-            "music":     os.path.join(os.environ["HOME"], "media", "music"),
-            "music-portable": os.path.join(os.environ["HOME"], "media", "music-etc", "music-portable"),
-            "playlists": os.path.join(os.environ["HOME"], "media", "music-etc", "playlists"),
-            "lyrics":    os.path.join(os.environ["HOME"], "media", "music-etc", "lyrics"),
-        }
-        self.convert_exts = ["flac"]
-        self.excluded_dirs = ["etc"]
+        pass
 
     ## CLI-related {{{
     def _parse_args(self):
         self.parser = argparse.ArgumentParser(description="Manage and maintain a music library.")
         self.parser.add_argument("-v", "--verbose", help="be verbose", action="count", default=0)
         self.parser.add_argument("-q", "--quiet", help="be quiet (overrides -v)", action="count", default=0)
+        self.parser.add_argument("-c", "--config",  help="specify configuration file", metavar="FILE", default=MusCtl.DEF_CONFIG_FILE)
         subparsers = self.parser.add_subparsers(title="commands", dest="command", metavar="[command]")
         subparsers.required = True
 
@@ -57,6 +59,42 @@ class MusCtl(raehutils.RaehBaseClass):
 
         self.args.verbose += 1 # force some verbosity
         self._parse_verbosity()
+        self._read_config()
+
+    def _read_config(self):
+        config_file = self.args.config
+        self.config = configparser.ConfigParser()
+        self.config.read(config_file)
+
+        try:
+            convert_exts_str = self.config["General"]["convert_exts"]
+            self.convert_exts = convert_exts_str.split(",")
+        except (AttributeError, KeyError):
+            self.convert_exts = MusCtl.DEF_CONVERT_EXTS
+        try:
+            exclude_dirs_str = self.config["General"]["exclude_dirs"]
+            self.exclude_dirs = exclude_dirs_str.split(",")
+        except (AttributeError, KeyError):
+            self.exclude_dirs = MusCtl.DEF_EXCLUDE_DIRS
+
+        self.media_loc = {
+            "music":          self._get_general_opt("media_music"),
+            "music-portable": self._get_general_opt("media_music_portable"),
+            "playlists":      self._get_general_opt("media_playlists"),
+        }
+
+    def _get_general_opt(self, opt_name):
+        try:
+            return os.path.expanduser(self.config["General"][opt_name])
+        except (AttributeError, KeyError):
+            return None
+
+    def _require_locs(self, locs):
+        for loc in locs:
+            if loc == None:
+                self.fail("missing a required location", MusCtl.ERR_CONFIG)
+                return False
+        return True
     ## }}}
 
     def main(self):
@@ -73,6 +111,10 @@ class MusCtl(raehutils.RaehBaseClass):
         self.cmd_check_playlists()
 
     def cmd_deduplicate_playlists(self):
+        self._require_locs([
+            self.media_loc["playlists"]
+        ])
+
         self.logger.info("deduplicating all playlists...")
         playlist_was_edited = False
         for playlist, tracks in self.__get_playlists().items():
@@ -94,6 +136,11 @@ class MusCtl(raehutils.RaehBaseClass):
             self.logger.info("no edits made")
 
     def cmd_check_playlists(self):
+        self._require_locs([
+            self.media_loc["playlists"],
+            self.media_loc["music"]
+        ])
+
         self.logger.info("checking for non-existing playlist tracks...")
         nonexist_track_was_found = False
         for playlist, tracks in self.__get_playlists().items():
@@ -129,6 +176,11 @@ class MusCtl(raehutils.RaehBaseClass):
         waste lots of disk space (and potentially time, if the portable library
         is kept on a separate filesystem) and just not be useful.
         """
+        self._require_locs([
+            self.media_loc["music"],
+            self.media_loc["music-portable"]
+        ])
+
         self.logger.info("generating portable library...")
 
         self.logger.info("finding files to copy...")
@@ -136,7 +188,7 @@ class MusCtl(raehutils.RaehBaseClass):
         regular_files = []
         for root, dirs, files in os.walk(self.media_loc["music"], topdown=True):
             # edit dirs in place to remove any excluded ones (must be top-down)
-            dirs[:] = [d for d in dirs if d not in self.excluded_dirs]
+            dirs[:] = [d for d in dirs if d not in self.exclude_dirs]
             for filename in files:
                 filepath = os.path.join(root, filename)
                 ext = os.path.splitext(filename)[1][1:]
