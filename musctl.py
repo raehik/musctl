@@ -8,11 +8,17 @@ import sys, os, argparse, logging
 
 import configparser
 
+import hashlib
+
 class MusCtl(raehutils.RaehBaseClass):
     DEF_CONFIG_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expandvars("$HOME/.config"), "musctl.ini")
 
     DEF_CONVERT_EXTS = ["flac"]
     DEF_EXCLUDE_DIRS = ["etc"]
+
+    HASHER = hashlib.sha256
+    HASHER_CHUNK_SIZE = 4096
+    HASH_FIELD = "OriginalHash"
 
     ERR_RSYNC = 1
     ERR_FILESYSTEM = 2
@@ -205,19 +211,22 @@ class MusCtl(raehutils.RaehBaseClass):
         tracks_needing_converting.sort()
         regular_files.sort()
 
-        self.logger.info("copying files & tracks not requiring conversion...")
-        cmd_rsync_regular = ["rsync", "-aR"]
-        if self.args.verbose == 2:
-            cmd_rsync_regular.append("--info=progress2")
-        elif self.args.verbose >= 3:
-            cmd_rsync_regular.append("-P")
-        cmd_rsync_regular += regular_files + [self.media_loc["music-portable"]]
-        self.fail_if_error(
-                self.run_shell_cmd(
-                    cmd_rsync_regular,
-                    cwd=self.media_loc["music"],
-                    min_verb_lvl=2),
-                "rsync command copying regular files failed", MusCtl.ERR_RSYNC)
+        if len(regular_files) == 0:
+            self.logger.info("(no simple-copy files, moving on)")
+        else:
+            self.logger.info("copying files & tracks not requiring conversion...")
+            cmd_rsync_regular = ["rsync", "-aR"]
+            if self.args.verbose == 2:
+                cmd_rsync_regular.append("--info=progress2")
+            elif self.args.verbose >= 3:
+                cmd_rsync_regular.append("-P")
+            cmd_rsync_regular += regular_files + [self.media_loc["music-portable"]]
+            self.fail_if_error(
+                    self.run_shell_cmd(
+                        cmd_rsync_regular,
+                        cwd=self.media_loc["music"],
+                        min_verb_lvl=2),
+                    "rsync command copying regular files failed", MusCtl.ERR_RSYNC)
 
         self.logger.info("converting tracks and placing into portable library...")
         total_convert_tracks = len(tracks_needing_converting)
@@ -246,33 +255,76 @@ class MusCtl(raehutils.RaehBaseClass):
         """Remove media_loc["music"] from the start of a path."""
         return path.replace("{}/".format(self.media_loc["music"]), "")
 
-    def __ffmpeg_convert(self, infile, outdir):
+    def __ffmpeg_convert(self, intrack, outdir):
         """Convert a track and place the output in the given directory.
 
-          * infile is guaranteed to have an extension
-          * outdir is guaranteed to be a valid existing directory
+        intrack is assumed to have an extension, and outdir is assumed to be a
+        valid existing directory that we can write to.
 
         Things we do in the conversion:
 
           * null video (i.e. remove embedded album art)
           * convert to OGG, quality 5
+          * add a Vorbis comment indicating the original's hash
 
-        If the outfile exists, we fail.
+        If a file with the planned converted track filename already exists, we
+        look at its stored hash:
 
-        @param infile an absolute path to a track
-        @param outdir absolute path of directory to place the output file in
-        @return the return code of the FFmpeg command
+          * if the outtrack's stored hash is different to the intrack's hash,
+            fail
+          * if the outtrack's stored hash is the same as the intrack's hash,
+            return successfully
+          * (if we fail to retrieve the outtrack's stored hash, we fail)
+
+        If the outtrack doesn't yet exist, we convert.
+
+        @param intrack an absolute path to a track
+        @param outdir absolute path of directory to place the outtrack in
+        @return 0 or the return code of the FFmpeg command
         """
-        outfile = os.path.join(outdir, os.path.splitext(os.path.basename(infile))[0]+".ogg")
-        if os.path.exists(outfile):
-            self.fail("ffmpeg outfile already exists: {}".format(outfile), MusCtl.ERR_FILESYSTEM)
-            #self.logger.error("ffmpeg outfile already exists: {}".format(outfile)) # TODO
-            pass
-        cmd_ffmpeg_conv_cp = ["ffmpeg", "-n", "-i", infile, "-vn", "-q:a", "5", outfile]
+        # outtrack filename = outdir+basename (filename only) of intrack
+        outtrack = os.path.join(outdir, os.path.splitext(os.path.basename(intrack))[0]+".ogg")
 
-        rc = self.run_shell_cmd(cmd_ffmpeg_conv_cp)
-        #rc = 0 # TODO
-        return rc
+        intrack_hash = self.__get_file_hash(intrack)
+        if os.path.exists(outtrack):
+            outtrack_stored_hash = self.__get_track_stored_hash(outtrack)
+            if outtrack_stored_hash == intrack_hash:
+                self.logger.info("(skipping conversion due to matching hashes)")
+                return 0
+            else:
+                self.fail("outtrack's stored hash does not match intrack: {}".format(outtrack), MusCtl.ERR_FILESYSTEM)
+
+        hash_metadata_segment = "{}={}".format(MusCtl.HASH_FIELD, intrack_hash)
+        cmd_ffmpeg_conv = ["ffmpeg", "-n", "-i", intrack, "-vn", "-q:a", "5", "-metadata", hash_metadata_segment, outtrack]
+        return self.run_shell_cmd(cmd_ffmpeg_conv)
+
+    def __get_file_hash(self, filename):
+        """Return the hash of the file referenced by the string passed.
+
+        The hashing method is decided internally.
+
+        @return the file's hash
+        """
+
+        hasher = MusCtl.HASHER()
+        with open(filename, "rb") as f:
+            for chunk in iter(lambda: f.read(MusCtl.HASHER_CHUNK_SIZE), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    def __get_track_stored_hash(self, track):
+        """Return the stored hash of a (converted) track.
+
+        @return the track's stored hash
+        """
+        cmd_ffprobe_hash = ["ffprobe", track, "-show_entries", "stream_tags={}".format(MusCtl.HASH_FIELD), "-of", "csv=p=0"]
+        rc, stdout, _ = raehutils.get_shell(cmd_ffprobe_hash)
+        if rc != 0:
+            self.fail("error while retrieving stored hash: {}".format(track), MusCtl.ERR_FFMPEG)
+        retrieved_hash = stdout.strip()
+        if retrieved_hash == "":
+            self.fail("converted track has no stored hash: {}".format(track), MusCtl.ERR_FILESYSTEM)
+        return retrieved_hash
 
     def run_shell_cmd(self, cmd, cwd=None, min_verb_lvl=3):
         """Run a shell command, only showing output if sufficiently verbose.
