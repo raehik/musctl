@@ -53,6 +53,8 @@ class MusCtl(raehutils.RaehBaseClass):
                 aliases=["gen-portable", "gen-port", "portable", "port"],
                 help="generate a portable version of the library",
                 description="Generate a portable version of the music library, with certain formats re-encoded to a consistent format and most scans and extras left out. Intended to be used to generate a library usable for portable music players with higher space constraints.")
+        subp_gen_port.add_argument("-C", "--copy-only",
+                help="skip the conversion step, only do file copying", action="store_true")
         subp_gen_port.set_defaults(func=self.cmd_generate_portable)
 
         subp_maintenance = subparsers.add_parser("maintenance",
@@ -189,6 +191,7 @@ class MusCtl(raehutils.RaehBaseClass):
 
         self.logger.info("generating portable library...")
 
+        # step 1: dumb file copying
         self.logger.info("finding files to copy...")
         tracks_needing_converting = []
         regular_files = []
@@ -228,26 +231,31 @@ class MusCtl(raehutils.RaehBaseClass):
                         min_verb_lvl=2),
                     "rsync command copying regular files failed", MusCtl.ERR_RSYNC)
 
-        self.logger.info("converting tracks and placing into portable library...")
-        total_convert_tracks = len(tracks_needing_converting)
-        for track_num in range(total_convert_tracks):
-            track = tracks_needing_converting[track_num]
-            infile = os.path.join(self.media_loc["music"], track)
-            outdir = os.path.dirname(os.path.join(self.media_loc["music-portable"], track))
+        # step 1 finished: if copy only, end here
+        if hasattr(self.args, "copy_only") and self.args.copy_only:
+            pass
+        else:
+            # step 2: converting
+            self.logger.info("converting tracks and placing into portable library...")
+            total_convert_tracks = len(tracks_needing_converting)
+            for track_num in range(total_convert_tracks):
+                track = tracks_needing_converting[track_num]
+                infile = os.path.join(self.media_loc["music"], track)
+                outdir = os.path.dirname(os.path.join(self.media_loc["music-portable"], track))
 
-            self.logger.info("converting track ({}/{}): {}".format(
-                track_num+1, total_convert_tracks, track))
+                self.logger.info("converting track ({}/{}): {}".format(
+                    track_num+1, total_convert_tracks, track))
 
-            # ensure the track's directory exists
-            self.fail_if_error(
-                    self.run_shell_cmd(["mkdir", "-p", outdir]),
-                    "couldn't create directory structure for a track to be converted",
-                    MusCtl.ERR_FILESYSTEM)
+                # ensure the track's directory exists
+                self.fail_if_error(
+                        self.run_shell_cmd(["mkdir", "-p", outdir]),
+                        "couldn't create directory structure for a track to be converted",
+                        MusCtl.ERR_FILESYSTEM)
 
-            # convert and move (without converting in place)
-            self.fail_if_error(
-                    self.__ffmpeg_convert(infile, outdir),
-                    "an ffmpeg command failed", MusCtl.ERR_FFMPEG)
+                # convert and move (without converting in place)
+                self.fail_if_error(
+                        self.__ffmpeg_convert(infile, outdir),
+                        "an ffmpeg command failed", MusCtl.ERR_FFMPEG)
 
         self.logger.info("portable library generated")
 
