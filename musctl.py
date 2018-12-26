@@ -55,6 +55,8 @@ class MusCtl(raehutils.RaehBaseClass):
                 description="Generate a portable version of the music library, with certain formats re-encoded to a consistent format and most scans and extras left out. Intended to be used to generate a library usable for portable music players with higher space constraints.")
         subp_gen_port.add_argument("-C", "--copy-only",
                 help="skip the conversion step, only do file copying", action="store_true")
+        subp_gen_port.add_argument("-L", "--create-links",
+                help="instead of copying files, create symlinks", action="store_true")
         subp_gen_port.set_defaults(func=self.cmd_generate_portable)
 
         subp_maintenance = subparsers.add_parser("maintenance",
@@ -217,19 +219,29 @@ class MusCtl(raehutils.RaehBaseClass):
         if len(regular_files) == 0:
             self.logger.info("(no simple-copy files, moving on)")
         else:
-            self.logger.info("copying files & tracks not requiring conversion...")
-            cmd_rsync_regular = ["rsync", "-aR"]
-            if self.args.verbose == 2:
-                cmd_rsync_regular.append("--info=progress2")
-            elif self.args.verbose >= 3:
-                cmd_rsync_regular.append("-P")
-            cmd_rsync_regular += regular_files + [self.media_loc["music-portable"]]
-            self.fail_if_error(
-                    self.run_shell_cmd(
-                        cmd_rsync_regular,
-                        cwd=self.media_loc["music"],
-                        min_verb_lvl=2),
-                    "rsync command copying regular files failed", MusCtl.ERR_RSYNC)
+            if hasattr(self.args, "create_links") and self.args.create_links:
+                self.logger.info("making symlinks for files & tracks not requiring conversion...")
+                for f in regular_files:
+                    f_dir = os.path.join(self.media_loc["music-portable"], os.path.dirname(f))
+                    f_path = os.path.join(f_dir, f)
+                    if not os.path.exists(f_dir):
+                        os.makedirs(f_dir)
+                    if not os.path.exists(f_path):
+                        os.symlink(os.path.join(self.media_loc["music"], f), os.path.join(self.media_loc["music-portable"], f))
+            else:
+                self.logger.info("copying files & tracks not requiring conversion...")
+                cmd_rsync_regular = ["rsync", "-aR"]
+                if self.args.verbose == 2:
+                    cmd_rsync_regular.append("--info=progress2")
+                elif self.args.verbose >= 3:
+                    cmd_rsync_regular.append("-P")
+                cmd_rsync_regular += regular_files + [self.media_loc["music-portable"]]
+                self.fail_if_error(
+                        self.run_shell_cmd(
+                            cmd_rsync_regular,
+                            cwd=self.media_loc["music"],
+                            min_verb_lvl=2),
+                        "rsync command copying regular files failed", MusCtl.ERR_RSYNC)
 
         # step 1 finished: if copy only, end here
         if hasattr(self.args, "copy_only") and self.args.copy_only:
