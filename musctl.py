@@ -222,12 +222,12 @@ class MusCtl(raehutils.RaehBaseClass):
             if hasattr(self.args, "create_links") and self.args.create_links:
                 self.logger.info("making symlinks for files & tracks not requiring conversion...")
                 for f in regular_files:
-                    f_dir = os.path.join(self.media_loc["music-portable"], os.path.dirname(f))
-                    f_path = os.path.join(f_dir, f)
+                    f_dir   = os.path.join(self.media_loc["music-portable"], os.path.dirname(f))
+                    f_path  = os.path.join(self.media_loc["music-portable"], f)
                     if not os.path.exists(f_dir):
                         os.makedirs(f_dir)
                     if not os.path.exists(f_path):
-                        os.symlink(os.path.join(self.media_loc["music"], f), os.path.join(self.media_loc["music-portable"], f))
+                        os.symlink(os.path.join(self.media_loc["music"], f), f_path)
             else:
                 self.logger.info("copying files & tracks not requiring conversion...")
                 cmd_rsync_regular = ["rsync", "-aR"]
