@@ -11,7 +11,7 @@ import configparser
 import hashlib
 
 class MusCtl(raehutils.RaehBaseClass):
-    DEF_CONFIG_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expandvars("$HOME/.config"), "musctl.ini")
+    DEF_CONFIG_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expandvars("$HOME/.config"), "musctl", "config.ini")
 
     DEF_CONVERT_EXTS = ["flac"]
     DEF_EXCLUDE_DIRS = ["etc"]
